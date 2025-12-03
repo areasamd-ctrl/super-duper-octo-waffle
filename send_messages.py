@@ -226,7 +226,7 @@ async def count_pending_requests_for_channel(client: TelegramClient, channel: ty
 async def fetch_all_pending_global(
     client: TelegramClient,
     channel: types.Channel,
-    page_size: int = 200
+    page_size: int = 100
 ) -> Tuple[List[types.User], Dict[int, int]]:
     """
     Fetch ALL pending join requests (global list, no link).
@@ -305,6 +305,20 @@ def sort_requesters(users: List[types.User], importer_ts: Dict[int, int]) -> Lis
 
     return sorted(users, key=key)
 
+# ---------- Channel subscribers (members) ----------
+async def fetch_all_channel_members(
+    client: TelegramClient,
+    channel: types.Channel
+) -> List[types.User]:
+    """
+    Fetch all members/subscribers of a channel or group where this account is admin.
+    """
+    members: List[types.User] = []
+    async for u in client.iter_participants(channel):
+        if isinstance(u, types.User):
+            members.append(u)
+    return members
+
 # ---------- Main ----------
 async def main():
     client = TelegramClient(SESSION, API_ID, API_HASH)
@@ -316,7 +330,8 @@ async def main():
     print("\nChoose recipients source:")
     print("  1) My Telegram contacts (sorted by presence)")
     print("  2) Pending join requests (global list, most recent first)")
-    choice = input("Enter 1 or 2: ").strip()
+    print("  3) Subscribers of an admin channel (sorted by presence)")
+    choice = input("Enter 1, 2 or 3: ").strip()
 
     # Load message (exact formatting preserved)
     message_template = read_message_template()
@@ -371,6 +386,58 @@ async def main():
         preview = "\n".join([f"  - {display_tag(u)} ({human_last_seen(u)})" for u in recipients_entities[:10]])
         print(preview if preview else "  (none)")
 
+    elif choice == "3":
+        # ----- Subscribers / members of an admin channel -----
+        admin_channels = await list_admin_channels(client)
+        if not admin_channels:
+            print("❌ No admin channels found on this account.")
+            await client.disconnect()
+            return
+
+        print("\nAdmin channels (for subscribers messaging):")
+        for i, ch in enumerate(admin_channels, start=1):
+            title = getattr(ch, "title", "Unnamed Channel")
+            print(f"  {i}) {title}")
+        sel = input("Select channel number: ").strip()
+        try:
+            sel_idx = max(1, int(sel)) - 1
+            ch = admin_channels[sel_idx]
+        except Exception:
+            print("❌ Invalid selection.")
+            await client.disconnect()
+            return
+
+        try:
+            members = await fetch_all_channel_members(client, ch)
+        except errors.RPCError as e:
+            print(f"❌ Could not fetch channel members: {e}")
+            await client.disconnect()
+            return
+
+        # Clean & filter (no bots, no deleted, no self)
+        cleaned: List[types.User] = []
+        for u in members:
+            if not isinstance(u, types.User):
+                continue
+            if u.bot or u.deleted:
+                continue
+            if me and u.id == my_id:
+                continue
+            cleaned.append(u)
+
+        # Sort by presence and last-seen
+        def member_key(u: types.User):
+            return (presence_bucket(u), -last_seen_ts(u))
+        recipients_entities = sorted(cleaned, key=member_key)
+
+        if not recipients_entities:
+            print("ℹ️ No suitable members found to message.")
+            await client.disconnect()
+            return
+
+        preview = "\n".join([f"  - {display_tag(u)} ({human_last_seen(u)})" for u in recipients_entities[:10]])
+        print(f"\nTop of the queue (channel subscribers):\n{preview}\n...")
+
     else:
         # ----- My Contacts (presence order) -----
         result = await client(functions.contacts.GetContactsRequest(hash=0))
@@ -394,13 +461,24 @@ async def main():
         preview = "\n".join([f"  - {display_tag(u)} ({human_last_seen(u)})" for u in recipients_entities[:10]])
         print(f"\nTop of the queue:\n{preview}\n...")
 
-        limit_str = input("Limit how many to message this run? (Enter for all): ").strip()
-        if limit_str:
-            try:
-                limit = max(0, int(limit_str))
-                recipients_entities = recipients_entities[:limit]
-            except ValueError:
-                pass
+    # ----- Limit how many to send this run (applies to all modes) -----
+    total_before_limit = len(recipients_entities)
+    if total_before_limit == 0:
+        print("ℹ️ No recipients queued.")
+        await client.disconnect()
+        return
+
+    print(f"\nTotal queued recipients: {total_before_limit}")
+    limit_str = input("Limit how many to message this run? (Enter for all): ").strip()
+    if limit_str:
+        try:
+            limit = max(0, int(limit_str))
+            recipients_entities = recipients_entities[:limit]
+            print(f"➡️ Will message {len(recipients_entities)} recipients this run.")
+        except ValueError:
+            print("❌ Invalid number, sending to all queued recipients.")
+    else:
+        print(f"➡️ No limit set, will message all {len(recipients_entities)} recipients.")
 
     # Load / init global DB
     sent_db = load_sent_db()
