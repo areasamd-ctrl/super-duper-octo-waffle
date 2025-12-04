@@ -578,6 +578,20 @@ async def main():
                 print(f"⏳ Waiting {wait_time}s due to FloodWait…")
                 await asyncio.sleep(wait_time)
 
+        except errors.RPCError as e:
+            # Any other RPC error during send (e.g. generic sendMessage error)
+            print(f"❌ RPC error while sending to {label}: {e}")
+            print("⚠️ Checking @SpamBot for possible send limits…")
+            cleared = await check_spambot_and_maybe_clear_limit(client)
+            if cleared:
+                print("✅ SpamBot says limits might be lifted — continuing to next recipient.")
+            else:
+                failures += 1
+                if idx < total - 1:
+                    delay = random.uniform(min_delay, max_delay)
+                    print(f"⏳ Waiting {delay:.1f}s before next message…")
+                    await asyncio.sleep(delay)
+
         except Exception as e:
             print(f"❌ Failed: {e}")
             failures += 1
