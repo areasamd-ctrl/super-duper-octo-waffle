@@ -11,8 +11,8 @@ from telethon import TelegramClient, errors, functions
 from telethon.tl import types
 
 # ==== HARD-CODED CREDENTIALS (as requested) ====
-API_ID = 31868724
-API_HASH = "62dbabacb3190bfed893d44727b24dc2"
+API_ID = 29779774
+API_HASH = "3d968d30c5f7ed63a9b6fd63b7d6ece1"
 SESSION = "premium_sender"
 # ===============================================
 
@@ -578,3 +578,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
