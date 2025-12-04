@@ -29,6 +29,44 @@ except KeyError as e:
     raise KeyError(f"Missing key in credentials.json: {e}")
 # ===============================================
 
+# ----- PROXY LOADER (auto-detect proxies.txt) -----
+PROXY_FILE = Path(__file__).with_name("proxies.txt")
+proxy = None  # default: no proxy
+
+
+def load_proxy_from_file():
+    if not PROXY_FILE.exists():
+        print("ℹ️ No proxies.txt found — running without proxy.")
+        return None
+
+    lines = [x.strip() for x in PROXY_FILE.read_text(encoding="utf-8").splitlines() if x.strip()]
+    if not lines:
+        print("ℹ️ proxies.txt is empty — running without proxy.")
+        return None
+
+    # Pick a random proxy line (or change to lines[0] if you always want the first)
+    line = random.choice(lines)
+    print(f"🌐 Using proxy from proxies.txt: {line}")
+
+    parts = line.split(":")
+    if len(parts) < 4:
+        print("❌ Invalid proxy format in proxies.txt. Expected ip:port:user:pass")
+        return None
+
+    host, port_str, user, pwd = parts[0], parts[1], parts[2], parts[3]
+    try:
+        port = int(port_str)
+    except ValueError:
+        print("❌ Invalid port in proxies.txt.")
+        return None
+
+    # Telethon proxy tuple: (type, host, port, rdns, username, password)
+    return ("socks5", host, port, True, user, pwd)
+
+
+proxy = load_proxy_from_file()
+# ===============================================
+
 # Persistent stores
 SENT_DB_FILE = Path("sent_db.json")
 SENT_LOG_FILE = Path("sent_log.csv")
@@ -40,12 +78,15 @@ def read_message_template() -> str:
         raise FileNotFoundError("message.txt not found")
     return path.read_text(encoding="utf-8").rstrip("\n")
 
+
 def fill_firstname(template: str, first_name: Optional[str]) -> str:
     return re.sub(r"\[Firstname\]", (first_name or "there"), template, flags=re.IGNORECASE)
+
 
 # ---------- Duplicate-check normalization ----------
 def normalize_for_compare(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").lower()).strip()
+
 
 async def already_sent_similar(client: TelegramClient, entity, text: str, limit: int = 400) -> bool:
     target_norm = normalize_for_compare(text)
@@ -53,6 +94,7 @@ async def already_sent_similar(client: TelegramClient, entity, text: str, limit:
         if normalize_for_compare(getattr(msg, "message", "")) == target_norm:
             return True
     return False
+
 
 # ---------- Global "do-not-message" registry ----------
 def load_sent_db() -> Dict:
@@ -63,8 +105,10 @@ def load_sent_db() -> Dict:
             pass
     return {"users": {}}
 
+
 def save_sent_db(db: Dict) -> None:
     SENT_DB_FILE.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+
 
 def mark_user_sent(db: Dict, user: types.User, account_id: int) -> None:
     now = int(datetime.now(timezone.utc).timestamp())
@@ -84,8 +128,10 @@ def mark_user_sent(db: Dict, user: types.User, account_id: int) -> None:
         if account_id not in (u.get("by_accounts") or []):
             u.setdefault("by_accounts", []).append(account_id)
 
+
 def user_already_sent_global(db: Dict, user_id: int) -> bool:
     return str(user_id) in db.get("users", {})
+
 
 def append_sent_log_row(account_id: int, user: types.User, label: str) -> None:
     new_file = not SENT_LOG_FILE.exists()
@@ -101,6 +147,7 @@ def append_sent_log_row(account_id: int, user: types.User, label: str) -> None:
             user.username or ""
         ])
 
+
 # ---------- Presence & ordering ----------
 def _to_timestamp(dt_or_int) -> float:
     if isinstance(dt_or_int, datetime):
@@ -108,6 +155,7 @@ def _to_timestamp(dt_or_int) -> float:
     if isinstance(dt_or_int, (int, float)):
         return float(dt_or_int)
     return 0.0
+
 
 def presence_bucket(user: types.User) -> int:
     """
@@ -132,6 +180,7 @@ def presence_bucket(user: types.User) -> int:
         return 4
     return 5
 
+
 def last_seen_ts(user: types.User) -> float:
     st = user.status
     if isinstance(st, types.UserStatusOffline):
@@ -139,6 +188,7 @@ def last_seen_ts(user: types.User) -> float:
     if isinstance(st, types.UserStatusOnline):
         return datetime.now(timezone.utc).timestamp()
     return 0.0
+
 
 def human_last_seen(user: types.User) -> str:
     st = user.status
@@ -149,11 +199,14 @@ def human_last_seen(user: types.User) -> str:
         if isinstance(was, datetime):
             delta = datetime.now(timezone.utc) - was
             secs = int(delta.total_seconds())
-            if secs < 60: return f"{secs}s ago"
+            if secs < 60:
+                return f"{secs}s ago"
             mins = secs // 60
-            if mins < 60: return f"{mins}m ago"
+            if mins < 60:
+                return f"{mins}m ago"
             hours = mins // 60
-            if hours < 24: return f"{hours}h ago"
+            if hours < 24:
+                return f"{hours}h ago"
             days = hours // 24
             return f"{days}d ago"
         return "last seen (unknown)"
@@ -165,6 +218,7 @@ def human_last_seen(user: types.User) -> str:
         return "last month"
     return "unknown"
 
+
 def display_tag(user: types.User) -> str:
     if user.username:
         return f"@{user.username}"
@@ -174,11 +228,13 @@ def display_tag(user: types.User) -> str:
         return user.phone
     return "Unknown"
 
+
 # ---------- SpamBot checker on FloodWait ----------
 LIMIT_MSG_RE = re.compile(
     r"limited until\s+(\d{1,2}\s+\w+\s+\d{4}),\s*(\d{1,2}:\d{2})\s+UTC",
     re.IGNORECASE
 )
+
 
 async def check_spambot_and_maybe_clear_limit(client: TelegramClient) -> bool:
     """
@@ -213,6 +269,7 @@ async def check_spambot_and_maybe_clear_limit(client: TelegramClient) -> bool:
     except Exception:
         return False
 
+
 # ---------- Admin channels & GLOBAL pending join requests (no invite links) ----------
 async def list_admin_channels(client: TelegramClient) -> List[types.Channel]:
     admin_channels: List[types.Channel] = []
@@ -222,6 +279,7 @@ async def list_admin_channels(client: TelegramClient) -> List[types.Channel]:
             if ent.creator or ent.admin_rights:
                 admin_channels.append(ent)
     return admin_channels
+
 
 async def count_pending_requests_for_channel(client: TelegramClient, channel: types.Channel) -> int:
     try:
@@ -235,6 +293,7 @@ async def count_pending_requests_for_channel(client: TelegramClient, channel: ty
         return int(getattr(res, "count", 0) or 0)
     except errors.RPCError:
         return 0
+
 
 async def fetch_all_pending_global(
     client: TelegramClient,
@@ -302,6 +361,7 @@ async def fetch_all_pending_global(
 
     return list(users_by_id.values()), request_ts
 
+
 def sort_requesters(users: List[types.User], importer_ts: Dict[int, int]) -> List[types.User]:
     """
     Final ordering:
@@ -318,6 +378,7 @@ def sort_requesters(users: List[types.User], importer_ts: Dict[int, int]) -> Lis
 
     return sorted(users, key=key)
 
+
 # ---------- Channel subscribers (members) ----------
 async def fetch_all_channel_members(
     client: TelegramClient,
@@ -332,9 +393,10 @@ async def fetch_all_channel_members(
             members.append(u)
     return members
 
+
 # ---------- Main ----------
 async def main():
-    client = TelegramClient(SESSION, API_ID, API_HASH)
+    client = TelegramClient(SESSION, API_ID, API_HASH, proxy=proxy)
 
     # This will prompt for phone/code on first run,
     # and for 2FA password only if the account has it enabled.
@@ -401,7 +463,9 @@ async def main():
 
         recipients_entities = sort_requesters(req_users, importer_ts)
         print(f"\nQueued {len(recipients_entities)} requester(s). Top 10:")
-        preview = "\n".join([f"  - {display_tag(u)} ({human_last_seen(u)})" for u in recipients_entities[:10]])
+        preview = "\n".join(
+            [f"  - {display_tag(u)} ({human_last_seen(u)})" for u in recipients_entities[:10]]
+        )
         print(preview if preview else "  (none)")
 
     elif choice == "3":
@@ -446,6 +510,7 @@ async def main():
         # Sort by presence and last-seen
         def member_key(u: types.User):
             return (presence_bucket(u), -last_seen_ts(u))
+
         recipients_entities = sorted(cleaned, key=member_key)
 
         if not recipients_entities:
@@ -453,7 +518,9 @@ async def main():
             await client.disconnect()
             return
 
-        preview = "\n".join([f"  - {display_tag(u)} ({human_last_seen(u)})" for u in recipients_entities[:10]])
+        preview = "\n".join(
+            [f"  - {display_tag(u)} ({human_last_seen(u)})" for u in recipients_entities[:10]]
+        )
         print(f"\nTop of the queue (channel subscribers):\n{preview}\n...")
 
     else:
@@ -474,9 +541,12 @@ async def main():
         # presence priority, then last-seen desc within exact bucket
         def contact_key(u: types.User):
             return (presence_bucket(u), -last_seen_ts(u))
+
         recipients_entities = sorted(cleaned, key=contact_key)
 
-        preview = "\n".join([f"  - {display_tag(u)} ({human_last_seen(u)})" for u in recipients_entities[:10]])
+        preview = "\n".join(
+            [f"  - {display_tag(u)} ({human_last_seen(u)})" for u in recipients_entities[:10]]
+        )
         print(f"\nTop of the queue:\n{preview}\n...")
 
     # ----- Limit how many to send this run (applies to all modes) -----
@@ -525,7 +595,7 @@ async def main():
     skips_global = 0
 
     for idx in range(total):
-        print(f"[{idx+1}/{total}] Preparing…")
+        print(f"[{idx + 1}/{total}] Preparing…")
         try:
             user, label = recipients_iter[idx]
             entity = user
@@ -539,7 +609,7 @@ async def main():
 
             # Personalize & duplicate-check (per-chat)
             first_name = entity.first_name if isinstance(entity, types.User) else None
-            msg = fill_firstname(read_message_template(), first_name)
+            msg = fill_firstname(message_template, first_name)
 
             if await already_sent_similar(client, entity, msg, limit=400):
                 print(f"⏭️ Skipped {label} (similar message already sent in this chat)")
@@ -585,6 +655,7 @@ async def main():
             cleared = await check_spambot_and_maybe_clear_limit(client)
             if cleared:
                 print("✅ SpamBot says limits might be lifted — continuing to next recipient.")
+                continue
             else:
                 failures += 1
                 if idx < total - 1:
@@ -607,6 +678,7 @@ async def main():
         f"Failed: {failures}"
     )
     await client.disconnect()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
