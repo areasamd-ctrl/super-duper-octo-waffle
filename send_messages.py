@@ -10,10 +10,23 @@ from typing import List, Tuple, Optional, Dict
 from telethon import TelegramClient, errors, functions
 from telethon.tl import types
 
-# ==== HARD-CODED CREDENTIALS (as requested) ====
-API_ID = 29779774
-API_HASH = "3d968d30c5f7ed63a9b6fd63b7d6ece1"
-SESSION = "premium_sender"
+# ==== CREDENTIALS FROM FILE ====
+CRED_FILE = Path(__file__).with_name("credentials.json")
+
+if not CRED_FILE.exists():
+    raise FileNotFoundError(
+        "credentials.json not found. Create it in the same folder as this script "
+        "with keys: API_ID, API_HASH, SESSION"
+    )
+
+data = json.loads(CRED_FILE.read_text(encoding="utf-8"))
+
+try:
+    API_ID = int(data["API_ID"])
+    API_HASH = str(data["API_HASH"])
+    SESSION = str(data.get("SESSION", "premium_sender"))
+except KeyError as e:
+    raise KeyError(f"Missing key in credentials.json: {e}")
 # ===============================================
 
 # Persistent stores
@@ -322,7 +335,12 @@ async def fetch_all_channel_members(
 # ---------- Main ----------
 async def main():
     client = TelegramClient(SESSION, API_ID, API_HASH)
-    await client.start()  # phone + code on first run
+
+    # This will prompt for phone/code on first run,
+    # and for 2FA password only if the account has it enabled.
+    await client.start(
+        password=lambda: input("Enter 2FA password (if enabled): ")
+    )
 
     me = await client.get_me()
     my_id = me.id if isinstance(me, types.User) else 0
@@ -578,4 +596,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
